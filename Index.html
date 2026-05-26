@@ -4130,15 +4130,21 @@ async function idbCarregarTodas(){
 
 /* -- MSAL -------------------------------------------------------- */
 var _msalApp = null;
-function getMsalApp(){
+var _msalInitPromise = null;
+async function getMsalApp(){
   if(_msalApp) return _msalApp;
   if(typeof msal === 'undefined'){
-    throw new Error('Biblioteca MSAL nao carregada. Verifique sua conexao com a internet e recarregue a pagina.');
+    throw new Error('Biblioteca MSAL nao carregada. Verifique sua conexao e recarregue a pagina.');
   }
   _msalApp = new msal.PublicClientApplication({
     auth:{ clientId:BOCCHI_CFG.clientId, authority:BOCCHI_CFG.authority, redirectUri:BOCCHI_CFG.redirectUri },
     cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:false }
   });
+  // MSAL v3+ exige chamar initialize() antes de qualquer outra função
+  if(typeof _msalApp.initialize === 'function'){
+    if(!_msalInitPromise) _msalInitPromise = _msalApp.initialize();
+    await _msalInitPromise;
+  }
   return _msalApp;
 }
 
@@ -4183,7 +4189,7 @@ function carregarMsalSeDinamic(){
 async function getToken(){
   // Garantir que MSAL está carregado
   await carregarMsalSeDinamic();
-  var app = getMsalApp();
+  var app = await getMsalApp();
   // Verificar redirect de login
   try{ await app.handleRedirectPromise(); }catch(e){}
   var accounts = app.getAllAccounts();
