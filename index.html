@@ -4130,16 +4130,27 @@ async function idbCarregarTodas(){
 
 /* -- MSAL -------------------------------------------------------- */
 var _msalApp = null;
-function getMsalApp(){
-  if(_msalApp) return _msalApp;
-  if(typeof msal === 'undefined'){
-    throw new Error('Biblioteca MSAL nao carregada. Verifique sua conexao com a internet e recarregue a pagina.');
-  }
-  _msalApp = new msal.PublicClientApplication({
-    auth:{ clientId:BOCCHI_CFG.clientId, authority:BOCCHI_CFG.authority, redirectUri:BOCCHI_CFG.redirectUri },
-    cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:false }
-  });
-  return _msalApp;
+var _msalReadyPromise = null;
+async function getMsalApp(){
+  // Singleton com Promise — garante que initialize() só é chamado uma vez
+  // e qualquer chamada concorrente aguarda a mesma Promise
+  if(_msalReadyPromise) return _msalReadyPromise;
+  _msalReadyPromise = (async function(){
+    if(typeof msal === 'undefined'){
+      throw new Error('Biblioteca MSAL nao carregada. Verifique sua conexao e recarregue a pagina.');
+    }
+    var app = new msal.PublicClientApplication({
+      auth:{ clientId:BOCCHI_CFG.clientId, authority:BOCCHI_CFG.authority, redirectUri:BOCCHI_CFG.redirectUri },
+      cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:false }
+    });
+    // MSAL v3+ exige await initialize() antes de qualquer operação
+    if(typeof app.initialize === 'function'){
+      await app.initialize();
+    }
+    _msalApp = app;
+    return app;
+  })();
+  return _msalReadyPromise;
 }
 
 function carregarMsalSeDinamic(){
@@ -4183,7 +4194,7 @@ function carregarMsalSeDinamic(){
 async function getToken(){
   // Garantir que MSAL está carregado
   await carregarMsalSeDinamic();
-  var app = getMsalApp();
+  var app = await getMsalApp();
   // Verificar redirect de login
   try{ await app.handleRedirectPromise(); }catch(e){}
   var accounts = app.getAllAccounts();
