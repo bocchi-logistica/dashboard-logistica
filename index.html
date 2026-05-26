@@ -6,8 +6,8 @@
 <title>Bocchi Agrobios — Hub de Indicadores Logísticos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
 
+<script src="./msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -4145,20 +4145,39 @@ function getMsalApp(){
 function carregarMsalSeDinamic(){
   return new Promise(function(resolve, reject){
     if(typeof msal !== 'undefined'){ resolve(); return; }
-    // Tentar CDN principal
-    var s = document.createElement('script');
-    s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
-    s.crossOrigin = 'anonymous';
-    s.onload = function(){ console.log('[MSAL] CDN principal carregado'); resolve(); };
-    s.onerror = function(){
-      console.warn('[MSAL] CDN principal falhou, tentando unpkg...');
-      var s2 = document.createElement('script');
-      s2.src = 'https://unpkg.com/@azure/msal-browser@2.38.3/dist/msal-browser.min.js';
-      s2.onload = function(){ console.log('[MSAL] CDN unpkg carregado'); resolve(); };
-      s2.onerror = function(){ reject(new Error('Nao foi possivel carregar a biblioteca MSAL. Verifique sua conexao.')); };
-      document.head.appendChild(s2);
-    };
-    document.head.appendChild(s);
+    var urls = [
+      './msal-browser.min.js',
+      'https://unpkg.com/@azure/msal-browser@2.39.0/dist/msal-browser.min.js',
+      'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/dist/msal-browser.min.js',
+      'https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js',
+      'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js'
+    ];
+    var idx = 0;
+    function tentarProximo(){
+      if(idx >= urls.length){
+        reject(new Error(
+          'Biblioteca MSAL nao carregou. Solucao: baixe o arquivo msal-browser.min.js ' +
+          'de https://unpkg.com/@azure/msal-browser/dist/msal-browser.min.js ' +
+          'e coloque na mesma pasta do index.html no GitHub.'
+        ));
+        return;
+      }
+      var url = urls[idx++];
+      console.log('[MSAL] Tentando: ' + url);
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function(){
+        if(typeof msal !== 'undefined'){
+          console.log('[MSAL] Carregado de: ' + url);
+          resolve();
+        } else {
+          tentarProximo();
+        }
+      };
+      s.onerror = function(){ tentarProximo(); };
+      document.head.appendChild(s);
+    }
+    tentarProximo();
   });
 }
 async function getToken(){
