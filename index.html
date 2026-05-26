@@ -4380,29 +4380,119 @@ async function getToken(){
 
 /* -- Graph API --------------------------------------------------- */
 async function graphGet(token, url){
+  console.log('[Graph] GET', url);
   var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
-  if(!r.ok) throw new Error('Graph API erro '+r.status+' em '+url);
-  return r.json();
+  if(!r.ok){
+    var body = '';
+    try{ body = await r.text(); }catch(e){}
+    console.error('[Graph] Erro '+r.status+' em '+url+'\nBody:', body);
+    var msg = 'Graph API erro '+r.status+' em '+url.split('?')[0];
+    if(r.status===401) msg += ' — Token invalido. Recarregue a pagina.';
+    if(r.status===403) msg += ' — Sem permissao. Verifique Admin Consent no Azure AD.';
+    if(r.status===404) msg += ' — Recurso nao encontrado.';
+    throw new Error(msg);
+  }
+  var json = await r.json();
+  console.log('[Graph] OK', url.split('?')[0], json);
+  return json;
 }
 
+async function resolverSiteId(token){
+  // Tentar 4 formas diferentes de obter o siteId
+  var tentativas = [
+    // 1. Formato hostname:/sites/nome
+    BOCCHI_CFG.graph+'/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios',
+    // 2. Formato root + caminho relativo
+    BOCCHI_CFG.graph+'/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios:',
+    // 3. Search por nome do site
+    BOCCHI_CFG.graph+'/sites?search=Logstica-BocchiAgrobios',
+    // 4. Search mais genérico
+    BOCCHI_CFG.graph+'/sites?search=Logstica'
+  ];
+
+  for(var i=0; i<tentativas.length; i++){
+    try{
+      var url = tentativas[i];
+      console.log('[Graph] Tentativa '+(i+1)+' para siteId:', url);
+      var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
+      var data = await r.json();
+      console.log('[Graph] Resposta tentativa '+(i+1)+':', data);
+
+      // Formato direto
+      if(data.id && !data.value){
+        console.log('[Graph] SiteId encontrado (direto):', data.id);
+        return data.id;
+      }
+      // Formato search (retorna .value array)
+      if(data.value && data.value.length > 0){
+        // Procurar o site correto
+        var site = data.value.find(function(s){
+          return s.name&&(s.name.toLowerCase().indexOf('logstica')!==-1||
+                          s.name.toLowerCase().indexOf('logistica')!==-1||
+                          s.name.toLowerCase().indexOf('bocchi')!==-1);
+        }) || data.value[0];
+        console.log('[Graph] SiteId encontrado (search):', site.id, site.name);
+        return site.id;
+      }
+    } catch(e){
+      console.warn('[Graph] Tentativa '+(i+1)+' falhou:', e.message);
+    }
+  }
+  throw new Error('Nao foi possivel resolver o siteId do SharePoint apos 4 tentativas. Verifique permissoes Sites.Read.All no Azure AD.');
+}
+
+// Cache do siteId e driveId para não repetir chamadas
+var _cachedSiteId = null, _cachedDriveId = null;
+
 async function getArquivoBuffer(token, nomeArquivo){
-  // 1. Buscar site ID
-  var site = await graphGet(token, BOCCHI_CFG.graph+'/sites/'+BOCCHI_CFG.siteUrl);
-  // 2. Buscar drives
-  var drives = await graphGet(token, BOCCHI_CFG.graph+'/sites/'+site.id+'/drives');
-  var drive = drives.value.find(function(d){ return d.name==='Documentos' || d.name==='Documents' || d.name==='Shared Documents'; });
-  if(!drive && drives.value.length) drive = drives.value[0];
-  if(!drive) throw new Error('Drive não encontrado');
-  // 3. Buscar arquivo pela pasta
+  // 1. Resolver siteId (com cache)
+  if(!_cachedSiteId){
+    _cachedSiteId = await resolverSiteId(token);
+  }
+  console.log('[Graph] Usando siteId:', _cachedSiteId);
+
+  // 2. Listar drives (com cache)
+  if(!_cachedDriveId){
+    var drives = await graphGet(token, BOCCHI_CFG.graph+'/sites/'+_cachedSiteId+'/drives');
+    console.log('[Graph] Drives disponiveis:', drives.value.map(function(d){return d.name+' ('+d.id+')';}));
+    var drive = drives.value.find(function(d){
+      var n=(d.name||'').toLowerCase();
+      return n==='documentos'||n==='documents'||n==='shared documents';
+    });
+    if(!drive && drives.value.length) drive = drives.value[0];
+    if(!drive) throw new Error('Nenhum drive encontrado no site. Drives: '+JSON.stringify(drives.value.map(function(d){return d.name;})));
+    _cachedDriveId = drive.id;
+    console.log('[Graph] Drive selecionado:', drive.name, _cachedDriveId);
+  }
+
+  // 3. Montar caminho e buscar item
   var path = BOCCHI_CFG.folder+'/'+nomeArquivo;
-  var itemUrl = BOCCHI_CFG.graph+'/drives/'+drive.id+'/root:/'+encodeURIComponent(path).replace(/%2F/g,'/');
-  // 4. Obter metadados (Last-Modified)
+  // Codificar cada segmento separadamente, mantendo as barras
+  var encodedPath = path.split('/').map(function(seg){ return encodeURIComponent(seg); }).join('/');
+  var itemUrl = BOCCHI_CFG.graph+'/drives/'+_cachedDriveId+'/root:/'+encodedPath;
+  console.log('[Graph] Buscando item:', itemUrl);
+
+  // 4. Metadados
   var meta = await graphGet(token, itemUrl);
-  var lastMod = meta.lastModifiedDateTime ? new Date(meta.lastModifiedDateTime).toLocaleString('pt-BR') : 'N/D';
-  // 5. Baixar conteúdo
-  var contentResp = await fetch(itemUrl+':/content', {headers:{Authorization:'Bearer '+token}});
-  if(!contentResp.ok) throw new Error('Erro ao baixar '+nomeArquivo+' ('+contentResp.status+')');
-  var buffer = await contentResp.arrayBuffer();
+  var lastMod = meta.lastModifiedDateTime
+    ? new Date(meta.lastModifiedDateTime).toLocaleString('pt-BR') : 'N/D';
+  console.log('[Graph] Arquivo encontrado:', meta.name, '| Modificado:', lastMod);
+
+  // 5. Baixar conteúdo via @microsoft.graph.downloadUrl (evita redirect CORS)
+  var downloadUrl = meta['@microsoft.graph.downloadUrl'];
+  var buffer;
+  if(downloadUrl){
+    console.log('[Graph] Usando downloadUrl direto');
+    var dr = await fetch(downloadUrl);
+    if(!dr.ok) throw new Error('Erro ao baixar via downloadUrl ('+dr.status+')');
+    buffer = await dr.arrayBuffer();
+  } else {
+    console.log('[Graph] Usando /content endpoint');
+    var cr = await fetch(itemUrl+':/content', {headers:{Authorization:'Bearer '+token}});
+    if(!cr.ok) throw new Error('Erro ao baixar '+nomeArquivo+' ('+cr.status+')');
+    buffer = await cr.arrayBuffer();
+  }
+
   return {buffer:buffer, lastMod:lastMod};
 }
 
@@ -4587,6 +4677,8 @@ async function carregarCache(){
 
 /* -- Função principal: atualizarBases ---------------------------- */
 async function atualizarBases(){
+  // Resetar cache de siteId/driveId para nova busca
+  _cachedSiteId = null; _cachedDriveId = null;
   var btn = document.getElementById('btnAtualizar');
   var msg = document.getElementById('msgCarregamento');
   if(btn){ btn.disabled=true; btn.textContent='⏳ Atualizando...'; }
