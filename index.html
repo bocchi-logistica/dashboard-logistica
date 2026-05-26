@@ -7,18 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
-<script>
-// Fallback: se o CDN principal falhar, tentar CDN alternativo
-window.addEventListener('error', function(e){
-  if(e.target && e.target.src && e.target.src.indexOf('msauth.net')!==-1){
-    var s=document.createElement('script');
-    s.src='https://unpkg.com/@azure/msal-browser@2.38.3/dist/msal-browser.min.js';
-    s.crossOrigin='anonymous';
-    document.head.appendChild(s);
-    console.warn('[MSAL] CDN principal falhou, usando fallback unpkg');
-  }
-}, true);
-</script>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -378,7 +367,7 @@ tbody td.neg{color:#e05a4a;font-weight:600}
     <div>
       <div class="sec-lbl" style="display:flex;justify-content:space-between;align-items:center;">
         <span>Bases de dados — SharePoint</span>
-        <button id="btnAtualizar" onclick="autoCarregarBases()" style="background:#c8b847;color:#14221a;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:'Barlow',sans-serif;cursor:pointer;letter-spacing:.5px;">&#8635; Atualizar Bases</button>
+        <button id="btnAtualizar" onclick="atualizarBases()" style="background:#c8b847;color:#14221a;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:'Barlow',sans-serif;cursor:pointer;letter-spacing:.5px;">&#8635; Atualizar Bases</button>
       </div>
       <div id="statusBases" style="display:grid;grid-template-columns:repeat(5,1fr);gap:.75rem;margin-top:.75rem;">
         <!-- preenchido por renderStatusBases() -->
@@ -4153,16 +4142,28 @@ function getMsalApp(){
   return _msalApp;
 }
 
+function carregarMsalSeDinamic(){
+  return new Promise(function(resolve, reject){
+    if(typeof msal !== 'undefined'){ resolve(); return; }
+    // Tentar CDN principal
+    var s = document.createElement('script');
+    s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
+    s.crossOrigin = 'anonymous';
+    s.onload = function(){ console.log('[MSAL] CDN principal carregado'); resolve(); };
+    s.onerror = function(){
+      console.warn('[MSAL] CDN principal falhou, tentando unpkg...');
+      var s2 = document.createElement('script');
+      s2.src = 'https://unpkg.com/@azure/msal-browser@2.38.3/dist/msal-browser.min.js';
+      s2.onload = function(){ console.log('[MSAL] CDN unpkg carregado'); resolve(); };
+      s2.onerror = function(){ reject(new Error('Nao foi possivel carregar a biblioteca MSAL. Verifique sua conexao.')); };
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s);
+  });
+}
 async function getToken(){
-  // Aguardar MSAL carregar se necessario (max 5s)
-  var tentativas = 0;
-  while(typeof msal === 'undefined' && tentativas < 50){
-    await new Promise(function(r){ setTimeout(r, 100); });
-    tentativas++;
-  }
-  if(typeof msal === 'undefined'){
-    throw new Error('MSAL nao carregou apos 5s. Verifique conexao e recarregue a pagina.');
-  }
+  // Garantir que MSAL está carregado
+  await carregarMsalSeDinamic();
   var app = getMsalApp();
   // Verificar redirect de login
   try{ await app.handleRedirectPromise(); }catch(e){}
