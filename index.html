@@ -74,7 +74,7 @@ PCA.prototype.acquireTokenSilent=function(req){
         client_id:self._cfg.auth.clientId,
         grant_type:'refresh_token',
         refresh_token:d.refresh_token,
-        scope:(req.scopes||[]).join(' ')+' offline_access'
+        scope:(req.scopes||[]).join(' ')+' offline_access openid profile'
       });
       var r=await fetch('https://login.microsoftonline.com/'+tid+'/oauth2/v2.0/token',
         {method:'POST',body:body,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
@@ -97,7 +97,7 @@ PCA.prototype.loginPopup=function(req){
       var state=genState();
       var tid=self._cfg.auth.authority.replace(/.*\//,'');
       var redir=self._cfg.auth.redirectUri||location.origin+location.pathname;
-      var scopes=((req&&req.scopes)||[]).concat(['offline_access']).join(' ');
+      var scopes=((req&&req.scopes)||[]).concat(['offline_access','openid','profile']).join(' ');
       var url='https://login.microsoftonline.com/'+tid+'/oauth2/v2.0/authorize'
         +'?client_id='+encodeURIComponent(self._cfg.auth.clientId)
         +'&response_type=code'
@@ -1136,6 +1136,12 @@ tbody td.neg{color:#e05a4a;font-weight:600}
 
 
 <script>
+
+
+
+
+
+
 
 
 
@@ -4225,7 +4231,7 @@ var BOCCHI_CFG = {
   clientId:    '7d1881f8-b141-4a89-bfd8-7df6acdc2f1c',
   authority:   'https://login.microsoftonline.com/d771e3a2-149f-4178-8b5e-afea8f00d6fa',
   redirectUri: 'https://bocchi-logistica.github.io/dashboard-logistica/',
-  scopes:      ['Files.Read.All','Sites.Read.All','User.Read'],
+  scopes:      ['https://graph.microsoft.com/Files.Read.All','https://graph.microsoft.com/Sites.Read.All','https://graph.microsoft.com/User.Read'],
   graph:       'https://graph.microsoft.com/v1.0',
   siteUrl:     'bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios',
   folder:      'Indicadores/Indicador HTML',
@@ -4361,21 +4367,35 @@ async function getToken(){
   // Verificar redirect de login
   try{ await app.handleRedirectPromise(); }catch(e){}
   var accounts = app.getAllAccounts();
+  var token = null;
   if(accounts.length > 0){
     try{
       var result = await app.acquireTokenSilent({ scopes:BOCCHI_CFG.scopes, account:accounts[0] });
-      return result.accessToken;
+      token = result.accessToken;
     }catch(e){
-      // Silent falhou — token expirado, pedir novo via popup
+      console.warn('[MSAL] Silent falhou, tentando popup:', e.message);
     }
   }
-  // Login via popup
-  try{
-    var result = await app.loginPopup({ scopes:BOCCHI_CFG.scopes });
-    return result.accessToken;
-  }catch(e){
-    throw new Error('Login cancelado ou sem permissão: '+e.message);
+  if(!token){
+    try{
+      var result = await app.loginPopup({ scopes:BOCCHI_CFG.scopes });
+      token = result.accessToken;
+    }catch(e){
+      throw new Error('Login cancelado ou sem permissao: '+e.message);
+    }
   }
+  // Log do token decodificado para diagnóstico
+  try{
+    var parts = token.split('.');
+    if(parts.length===3){
+      var payload = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+      console.log('[MSAL] Token obtido para:', payload.upn||payload.preferred_username||payload.email||'?');
+      console.log('[MSAL] Scopes no token (scp):', payload.scp||payload.roles||'N/D');
+      console.log('[MSAL] Audience (aud):', payload.aud);
+      console.log('[MSAL] Expira em:', new Date(payload.exp*1000).toLocaleString('pt-BR'));
+    }
+  }catch(e){}
+  return token;
 }
 
 /* -- Graph API --------------------------------------------------- */
@@ -4398,51 +4418,119 @@ async function graphGet(token, url){
 }
 
 async function resolverSiteId(token){
-  // Tentar 4 formas diferentes de obter o siteId
-  var tentativas = [
-    // 1. Formato hostname:/sites/nome
-    BOCCHI_CFG.graph+'/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios',
-    // 2. Formato root + caminho relativo
-    BOCCHI_CFG.graph+'/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios:',
-    // 3. Search por nome do site
-    BOCCHI_CFG.graph+'/sites?search=Logstica-BocchiAgrobios',
-    // 4. Search mais genérico
-    BOCCHI_CFG.graph+'/sites?search=Logstica'
-  ];
-
-  for(var i=0; i<tentativas.length; i++){
-    try{
-      var url = tentativas[i];
-      console.log('[Graph] Tentativa '+(i+1)+' para siteId:', url);
-      var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
-      var data = await r.json();
-      console.log('[Graph] Resposta tentativa '+(i+1)+':', data);
-
-      // Formato direto
-      if(data.id && !data.value){
-        console.log('[Graph] SiteId encontrado (direto):', data.id);
-        return data.id;
-      }
-      // Formato search (retorna .value array)
-      if(data.value && data.value.length > 0){
-        // Procurar o site correto
-        var site = data.value.find(function(s){
-          return s.name&&(s.name.toLowerCase().indexOf('logstica')!==-1||
-                          s.name.toLowerCase().indexOf('logistica')!==-1||
-                          s.name.toLowerCase().indexOf('bocchi')!==-1);
-        }) || data.value[0];
-        console.log('[Graph] SiteId encontrado (search):', site.id, site.name);
-        return site.id;
-      }
-    } catch(e){
-      console.warn('[Graph] Tentativa '+(i+1)+' falhou:', e.message);
-    }
-  }
-  throw new Error('Nao foi possivel resolver o siteId do SharePoint apos 4 tentativas. Verifique permissoes Sites.Read.All no Azure AD.');
+  // Estratégia 1: Graph API /sites com hostname
+  var url = 'https://graph.microsoft.com/v1.0/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios';
+  console.log('[Graph] Buscando siteId:', url);
+  var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
+  var data = await r.json();
+  console.log('[Graph] Resposta siteId:', JSON.stringify(data).slice(0,300));
+  if(data.id) return data.id;
+  throw new Error('siteId nao encontrado. Resposta: '+JSON.stringify(data).slice(0,200));
 }
 
-// Cache do siteId e driveId para não repetir chamadas
+
 var _cachedSiteId = null, _cachedDriveId = null;
+
+async function getArquivoBuffer(token, nomeArquivo){
+  console.log('[Graph] Buscando arquivo:', nomeArquivo);
+
+  // ESTRATÉGIA 1: Graph API com siteId dinâmico
+  try{
+    if(!_cachedSiteId){
+      _cachedSiteId = await resolverSiteId(token);
+    }
+    console.log('[Graph] siteId:', _cachedSiteId);
+
+    if(!_cachedDriveId){
+      var drives = await fetch(
+        'https://graph.microsoft.com/v1.0/sites/'+_cachedSiteId+'/drives',
+        {headers:{Authorization:'Bearer '+token}}
+      );
+      var drivesData = await drives.json();
+      console.log('[Graph] Drives:', drivesData.value&&drivesData.value.map(function(d){return d.name;}));
+      var drive = drivesData.value&&drivesData.value.find(function(d){
+        var n=(d.name||'').toLowerCase();
+        return n==='documentos'||n==='documents'||n==='shared documents';
+      });
+      if(!drive && drivesData.value&&drivesData.value.length) drive=drivesData.value[0];
+      if(drive) _cachedDriveId = drive.id;
+      console.log('[Graph] Drive selecionado:', drive&&drive.name, _cachedDriveId);
+    }
+
+    if(_cachedDriveId){
+      var path = 'Indicadores/Indicador HTML/'+nomeArquivo;
+      var encodedPath = path.split('/').map(function(s){return encodeURIComponent(s);}).join('/');
+      var itemUrl = 'https://graph.microsoft.com/v1.0/drives/'+_cachedDriveId+'/root:/'+encodedPath;
+      console.log('[Graph] Item URL:', itemUrl);
+      var metaR = await fetch(itemUrl, {headers:{Authorization:'Bearer '+token}});
+      var meta = await metaR.json();
+      console.log('[Graph] Meta:', JSON.stringify(meta).slice(0,200));
+      if(meta.id){
+        var lastMod = meta.lastModifiedDateTime?new Date(meta.lastModifiedDateTime).toLocaleString('pt-BR'):'N/D';
+        // Baixar via downloadUrl ou /content
+        var dlUrl = meta['@microsoft.graph.downloadUrl'];
+        var buf;
+        if(dlUrl){
+          var dlR = await fetch(dlUrl);
+          if(!dlR.ok) throw new Error('Erro download direto: '+dlR.status);
+          buf = await dlR.arrayBuffer();
+        } else {
+          var contR = await fetch(itemUrl+':/content', {headers:{Authorization:'Bearer '+token}});
+          if(!contR.ok) throw new Error('Erro /content: '+contR.status);
+          buf = await contR.arrayBuffer();
+        }
+        return {buffer:buf, lastMod:lastMod};
+      }
+    }
+  } catch(e1){
+    console.warn('[Graph] Estratégia Graph API falhou:', e1.message);
+    _cachedSiteId=null; _cachedDriveId=null;
+  }
+
+  // ESTRATÉGIA 2: SharePoint REST API diretamente (não requer siteId)
+  try{
+    var spRelPath = '/sites/Logstica-BocchiAgrobios/Shared%20Documents/Indicadores/Indicador%20HTML/' + encodeURIComponent(nomeArquivo);
+    var spUrl = 'https://bocchiagrobios.sharepoint.com/_api/web/GetFileByServerRelativeUrl(\'' + spRelPath + '\')/$value';
+    console.log('[SP REST] Tentando:', spUrl);
+    var spR = await fetch(spUrl, {headers:{'Authorization':'Bearer '+token,'Accept':'application/octet-stream'}});
+    console.log('[SP REST] Status:', spR.status);
+    if(spR.ok){
+      return {buffer: await spR.arrayBuffer(), lastMod:'Via SharePoint REST'};
+    }
+    console.warn('[SP REST] Status nao ok:', spR.status);
+  } catch(e2){
+    console.warn('[SP REST] Falhou:', e2.message);
+  }
+
+  // ESTRATÉGIA 3: Graph com siteId fixo (hardcoded como fallback final)
+  // Para obter o siteId fixo: abra o Graph Explorer e acesse
+  // https://graph.microsoft.com/v1.0/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios
+  // Cole o valor de "id" aqui:
+  var SITE_ID_FIXO = ''; // ex: 'bocchiagrobios.sharepoint.com,abc123,def456'
+  if(SITE_ID_FIXO){
+    try{
+      var drives2 = await fetch(
+        'https://graph.microsoft.com/v1.0/sites/'+SITE_ID_FIXO+'/drives',
+        {headers:{Authorization:'Bearer '+token}}
+      );
+      var d2 = await drives2.json();
+      var dr2 = d2.value&&(d2.value.find(function(d){var n=d.name.toLowerCase();return n.indexOf('doc')!==-1;})||d2.value[0]);
+      if(dr2){
+        var p2 = 'Indicadores/Indicador HTML/'+nomeArquivo;
+        var ep2 = p2.split('/').map(function(s){return encodeURIComponent(s);}).join('/');
+        var iUrl2 = 'https://graph.microsoft.com/v1.0/drives/'+dr2.id+'/root:/'+ep2;
+        var m2 = await fetch(iUrl2, {headers:{Authorization:'Bearer '+token}});
+        var mj2 = await m2.json();
+        if(mj2['@microsoft.graph.downloadUrl']){
+          var br2 = await fetch(mj2['@microsoft.graph.downloadUrl']);
+          if(br2.ok) return {buffer:await br2.arrayBuffer(), lastMod:'Via siteId fixo'};
+        }
+      }
+    }catch(e3){console.warn('[Graph fixo] Falhou:',e3.message);}
+  }
+
+  throw new Error('Nao foi possivel baixar o arquivo "'+nomeArquivo+'" por nenhuma estratégia. Verifique permissões no Azure AD e acesso ao SharePoint.');
+}
 
 async function getArquivoBuffer(token, nomeArquivo){
   // 1. Resolver siteId (com cache)
@@ -4729,6 +4817,19 @@ async function atualizarBases(){
 
 /* -- Inicialização ao abrir ------------------------------------- */
 window.addEventListener('load', async function(){
+  // Limpar token MSAL antigo se tinha scopes errados (sem prefixo graph.microsoft.com)
+  try{
+    var msalKey = '__msal_shim_7d1881f8-b141-4a89-bfd8-7df6acdc2f1c';
+    var old = localStorage.getItem(msalKey);
+    if(old){
+      var od = JSON.parse(old);
+      var scps = (od.scopes||[]).join(' ');
+      if(scps.indexOf('graph.microsoft.com')===-1){
+        localStorage.removeItem(msalKey);
+        console.log('[MSAL] Token antigo removido — scopes incorretos. Novo login necessário.');
+      }
+    }
+  }catch(e){}
   renderStatusBases();
   // 1. Carregar cache primeiro (rápido)
   var temCache = await carregarCache();
@@ -4739,6 +4840,12 @@ window.addEventListener('load', async function(){
     catch(e){ console.warn('[AutoLoad] Erro no carregamento automático:', e); }
   }, temCache ? 2000 : 500);
 });
+
+
+
+
+
+
 
 </script>
 </body>
