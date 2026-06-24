@@ -6,172 +6,6 @@
 <title>Bocchi Agrobios — Hub de Indicadores Logísticos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-
-<script>
-/*! msal-shim v2.0 — PKCE Authorization Code Flow
- *  Implementação própria para GitHub Pages + Microsoft Entra ID
- *  Compatible com: PublicClientApplication API (MSAL v2/v3)
- */
-(function(g){'use strict';
-
-function b64url(buf){
-  return btoa(String.fromCharCode.apply(null,new Uint8Array(buf)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-async function genPkce(){
-  var v=b64url(crypto.getRandomValues(new Uint8Array(32)));
-  var d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v));
-  return{verifier:v,challenge:b64url(d)};
-}
-function genState(){return b64url(crypto.getRandomValues(new Uint8Array(16)));}
-function parseJwt(t){
-  try{return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));}
-  catch(e){return{};}
-}
-
-function PCA(cfg){
-  this._cfg=cfg;
-  this._store=cfg.cache&&cfg.cache.cacheLocation==='localStorage'?localStorage:sessionStorage;
-  this._key='__msal_shim_'+cfg.auth.clientId;
-  this._initialized=false;
-}
-
-PCA.prototype.initialize=function(){
-  this._initialized=true;
-  return Promise.resolve();
-};
-
-PCA.prototype._save=function(d){
-  try{this._store.setItem(this._key,JSON.stringify(d));}catch(e){}
-};
-PCA.prototype._load=function(){
-  try{return JSON.parse(this._store.getItem(this._key)||'null');}catch(e){return null;}
-};
-
-PCA.prototype.getAllAccounts=function(){
-  var d=this._load();
-  return(d&&d.account)?[d.account]:[];
-};
-
-PCA.prototype.handleRedirectPromise=function(){
-  return Promise.resolve(null);
-};
-
-PCA.prototype.acquireTokenSilent=function(req){
-  var self=this;
-  return new Promise(async function(res,rej){
-    var d=self._load();
-    if(!d||!d.access_token){rej(new Error('no_account'));return;}
-    // Token válido com 5min de margem
-    if(d.expires_at&&Date.now()<d.expires_at-300000){
-      res({accessToken:d.access_token,account:d.account});return;
-    }
-    // Renovar via refresh_token
-    if(!d.refresh_token){rej(new Error('no_refresh_token'));return;}
-    try{
-      var tid=self._cfg.auth.authority.replace(/.*\//,'');
-      var body=new URLSearchParams({
-        client_id:self._cfg.auth.clientId,
-        grant_type:'refresh_token',
-        refresh_token:d.refresh_token,
-        scope:(req.scopes||[]).join(' ')+' offline_access openid profile'
-      });
-      var r=await fetch('https://login.microsoftonline.com/'+tid+'/oauth2/v2.0/token',
-        {method:'POST',body:body,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
-      var t=await r.json();
-      if(t.error){rej(new Error(t.error_description||t.error));return;}
-      d.access_token=t.access_token;
-      d.expires_at=Date.now()+t.expires_in*1000;
-      if(t.refresh_token)d.refresh_token=t.refresh_token;
-      self._save(d);
-      res({accessToken:t.access_token,account:d.account});
-    }catch(e){rej(e);}
-  });
-};
-
-PCA.prototype.loginPopup=function(req){
-  var self=this;
-  return new Promise(async function(res,rej){
-    try{
-      var pkce=await genPkce();
-      var state=genState();
-      var tid=self._cfg.auth.authority.replace(/.*\//,'');
-      var redir=self._cfg.auth.redirectUri||location.origin+location.pathname;
-      var scopes=((req&&req.scopes)||[]).concat(['offline_access','openid','profile']).join(' ');
-      var url='https://login.microsoftonline.com/'+tid+'/oauth2/v2.0/authorize'
-        +'?client_id='+encodeURIComponent(self._cfg.auth.clientId)
-        +'&response_type=code'
-        +'&redirect_uri='+encodeURIComponent(redir)
-        +'&scope='+encodeURIComponent(scopes)
-        +'&state='+state
-        +'&code_challenge='+pkce.challenge
-        +'&code_challenge_method=S256'
-        +'&prompt=select_account';
-
-      var w=800,h=600,l=(screen.width-w)/2,t=(screen.height-h)/2;
-      var pop=window.open(url,'_msal_popup',
-        'width='+w+',height='+h+',left='+l+',top='+t+',toolbar=0,menubar=0,location=0');
-      if(!pop){rej(new Error('Popup bloqueado. Permita popups para este site e tente novamente.'));return;}
-
-      var timer=setInterval(async function(){
-        if(!pop||pop.closed){
-          clearInterval(timer);
-          rej(new Error('Login cancelado.'));
-          return;
-        }
-        var href='';
-        try{href=pop.location.href;}catch(e){return;}
-        var base=redir.split('?')[0];
-        if(href&&(href.startsWith(base)||href.startsWith(location.origin+location.pathname))){
-          pop.close();
-          clearInterval(timer);
-          var params=new URL(href).searchParams;
-          var code=params.get('code');
-          if(!code){rej(new Error('Sem código de autorização.'));return;}
-          if(params.get('state')!==state){rej(new Error('State inválido.'));return;}
-          // Trocar code por tokens
-          try{
-            var body=new URLSearchParams({
-              client_id:self._cfg.auth.clientId,
-              grant_type:'authorization_code',
-              code:code,
-              redirect_uri:redir,
-              code_verifier:pkce.verifier,
-              scope:scopes
-            });
-            var r=await fetch('https://login.microsoftonline.com/'+tid+'/oauth2/v2.0/token',
-              {method:'POST',body:body,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
-            var tk=await r.json();
-            if(tk.error){rej(new Error(tk.error_description||tk.error));return;}
-            var claims=parseJwt(tk.id_token||tk.access_token);
-            var acc={
-              homeAccountId:claims.oid||claims.sub||'',
-              username:claims.upn||claims.preferred_username||claims.email||'usuario',
-              name:claims.name||'Usuário Bocchi'
-            };
-            self._save({
-              access_token:tk.access_token,
-              refresh_token:tk.refresh_token||null,
-              expires_at:Date.now()+tk.expires_in*1000,
-              account:acc,
-              scopes:scopes.split(' ')
-            });
-            res({accessToken:tk.access_token,account:acc,idToken:tk.id_token});
-          }catch(e){rej(e);}
-        }
-      },250);
-    }catch(e){rej(e);}
-  });
-};
-
-// Expor globalmente como "msal"
-var mod={PublicClientApplication:PCA};
-if(typeof module!=='undefined'&&module.exports)module.exports=mod;
-else g.msal=mod;
-
-})(typeof globalThis!=='undefined'?globalThis:typeof window!=='undefined'?window:this);
-
-</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -531,7 +365,7 @@ tbody td.neg{color:#e05a4a;font-weight:600}
     <div>
       <div class="sec-lbl" style="display:flex;justify-content:space-between;align-items:center;">
         <span>Bases de dados — SharePoint</span>
-        <button id="btnAtualizar" onclick="atualizarBases()" style="background:#c8b847;color:#14221a;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:'Barlow',sans-serif;cursor:pointer;letter-spacing:.5px;">&#8635; Atualizar Bases</button>
+        <button id="btnAtualizar" onclick="autoCarregarBases()" style="background:#c8b847;color:#14221a;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:'Barlow',sans-serif;cursor:pointer;letter-spacing:.5px;">&#8635; Atualizar Bases</button>
       </div>
       <div id="statusBases" style="display:grid;grid-template-columns:repeat(5,1fr);gap:.75rem;margin-top:.75rem;">
         <!-- preenchido por renderStatusBases() -->
@@ -1136,13 +970,6 @@ tbody td.neg{color:#e05a4a;font-weight:600}
 
 
 <script>
-
-
-
-
-
-
-
 
 
 
@@ -2579,13 +2406,6 @@ function d2Refresh(){
   try{ d2BuildProduto(data); }catch(e){console.error('[D2] d2BuildProduto:',e);}
   try{ d2BuildCusto(data); }catch(e){console.error('[D2] d2BuildCusto:',e);}
   try{ d2BuildTipo(data); }catch(e){console.error('[D2] d2BuildTipo:',e);}
-  var el=document.getElementById('d2activeFilters');
-  if(el)el.textContent=d2GetActiveLabel();
-  console.log('[D2] d2Refresh concluido OK');
-}
-
-function d2GenerateDemo(){
-  var data=[];
   var transprs=['TRANSVIDAL','VDA LOGISTICA','RODOFROTA','SOTRAN','JORGINHO','LEONHARDT','COTRAOURO','BUDEL'];
   var prods=['SOJA','FARELO','MILHO','TRIGO','RESIDUO','METANOL'];
   var tipos=['PROPRIO','TERCEIRO'];
@@ -4219,395 +4039,133 @@ function clearCapaFile5(){
 
 
 /* ================================================================
-/* ================================================================
-   BOCCHI LOGISTICA — MSAL + GRAPH + INDEXEDDB
-   Tenant: d771e3a2-149f-4178-8b5e-afea8f00d6fa
-   Client: 7d1881f8-b141-4a89-bfd8-7df6acdc2f1c
-   Redirect: https://bocchi-logistica.github.io/dashboard-logistica/
+   AUTO-CARREGAMENTO DAS BASES - SharePoint / caminhos relativos
    ================================================================ */
-
-/* -- Configuração ------------------------------------------------ */
-var BOCCHI_CFG = {
-  clientId:    '7d1881f8-b141-4a89-bfd8-7df6acdc2f1c',
-  authority:   'https://login.microsoftonline.com/d771e3a2-149f-4178-8b5e-afea8f00d6fa',
-  redirectUri: 'https://bocchi-logistica.github.io/dashboard-logistica/',
-  scopes:      ['https://graph.microsoft.com/Files.Read.All','https://graph.microsoft.com/Sites.Read.All','https://graph.microsoft.com/User.Read'],
-  graph:       'https://graph.microsoft.com/v1.0',
-  siteUrl:     'bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios',
-  folder:      'Indicadores/Indicador HTML',
-  arquivos: [
-    {id:'freteTerceiros', nome:'Frete Terceiros _ powerquerry.xlsx',        fn:'processarFreteTerceiros', label:'1 — Frete Terceiros'},
-    {id:'freteGeral',     nome:'Frete Geral _ powerquerry.xlsx',            fn:'processarFreteGeral',     label:'2 — Frete Geral'},
-    {id:'freteFrota',     nome:'Base frete e despesa frota.xlsx',  fn:'processarFrota',          label:'Frota Própria'},
-    {id:'disponibilidade',nome:'Disponibilidade Frota_powerquery.xlsx',fn:'processarDisponibilidade',label:'Disponibilidade'},
-    {id:'atendimento',    nome:'atendimento Demanda _ powerquerry.xlsx',fn:'processarAtendimento',label:'Atendimento'}
-  ]
-};
-
-/* -- IndexedDB --------------------------------------------------- */
-var IDB_NAME = 'BocchiDashboard', IDB_STORE = 'dados', IDB_VER = 1;
-function idbOpen(){
-  return new Promise(function(resolve,reject){
-    var req = indexedDB.open(IDB_NAME, IDB_VER);
-    req.onupgradeneeded = function(e){ e.target.result.createObjectStore(IDB_STORE); };
-    req.onsuccess = function(e){ resolve(e.target.result); };
-    req.onerror   = function(e){ reject(e.target.error); };
-  });
-}
-function idbSave(key,value){
-  return idbOpen().then(function(db){
-    return new Promise(function(resolve,reject){
-      var tx=db.transaction(IDB_STORE,'readwrite');
-      tx.objectStore(IDB_STORE).put(value,key);
-      tx.oncomplete=resolve; tx.onerror=reject;
-    });
-  });
-}
-function idbGet(key){
-  return idbOpen().then(function(db){
-    return new Promise(function(resolve,reject){
-      var tx=db.transaction(IDB_STORE,'readonly');
-      var req=tx.objectStore(IDB_STORE).get(key);
-      req.onsuccess=function(){ resolve(req.result); };
-      req.onerror=function(){ resolve(null); };
-    });
-  });
-}
-async function idbSalvarBase(id,dados){
-  var mapa={
-    freteTerceiros:'bocchi_all_data_v1',
-    freteGeral:    'bocchi_all_data_d2_v1',
-    freteFrota:    'bocchi_all_data_frota_v1',
-    disponibilidade:'bocchi_all_data_disp_v1',
-    atendimento:   'bocchi_all_data_atend_v1'
-  };
-  if(mapa[id]) try{ await idbSave(mapa[id],dados); }catch(e){ console.warn('[IDB] Erro ao salvar '+id,e); }
-}
-async function idbCarregarTodas(){
-  var keys={
-    freteTerceiros:'bocchi_all_data_v1',
-    freteGeral:    'bocchi_all_data_d2_v1',
-    freteFrota:    'bocchi_all_data_frota_v1',
-    disponibilidade:'bocchi_all_data_disp_v1',
-    atendimento:   'bocchi_all_data_atend_v1'
-  };
-  var resultado={};
-  for(var id in keys){
-    try{ resultado[id]=await idbGet(keys[id]); }catch(e){ resultado[id]=null; }
+var BASES_CONFIG = [
+  {
+    id: 'freteTerceiros',
+    nome: 'Frete Terceiros _ powerquerry.xlsx',
+    path: './Frete Terceiros _ powerquerry.xlsx',
+    fn: function(wb){ return processarFreteTerceiros(wb); },
+    label: '1 - Frete Terceiros'
+  },
+  {
+    id: 'freteGeral',
+    nome: 'Frete Geral _ powerquerry.xlsx',
+    path: './Frete Geral _ powerquerry.xlsx',
+    fn: function(wb){ return processarFreteGeral(wb); },
+    label: '2 - Frete Geral'
+  },
+  {
+    id: 'freteFrota',
+    nome: 'Base frete e despesa frota.xlsx',
+    path: './Base frete e despesa frota.xlsx',
+    fn: function(wb){ return processarFrota(wb); },
+    label: 'Frota Própria'
+  },
+  {
+    id: 'disponibilidade',
+    nome: 'Disponibilidade Frota_powerquery.xlsx',
+    path: './Disponibilidade Frota_powerquery.xlsx',
+    fn: function(wb){ return processarDisponibilidade(wb); },
+    label: 'Disponibilidade'
+  },
+  {
+    id: 'atendimento',
+    nome: 'atendimento Demanda _ powerquerry.xlsx',
+    path: './atendimento Demanda _ powerquerry.xlsx',
+    fn: function(wb){ return processarAtendimento(wb); },
+    label: 'Atendimento'
   }
-  return resultado;
+];
+
+var _statusBases = {}; // {id: {status, lastMod, erro}}
+
+function renderStatusBases(){
+  var el = document.getElementById('statusBases');
+  if(!el) return;
+  var colors = {base:'var(--accent)', ok:'#8ab34a', erro:'#e05a4a', loading:'#6a8a6a'};
+  el.innerHTML = BASES_CONFIG.map(function(b){
+    var s = _statusBases[b.id] || {status:'aguardando'};
+    var cor = s.status==='ok'?colors.ok : s.status==='erro'?colors.erro : colors.loading;
+    var icon = s.status==='ok'?'&#10003;' : s.status==='erro'?'&#10005;' : s.status==='loading'?'&#8635;' : '&#9679;';
+    var msg = s.status==='ok'
+      ? (s.lastMod||'Carregado')
+      : s.status==='erro'
+        ? (s.erro||'Erro')
+        : s.status==='loading'
+          ? 'Carregando...'
+          : 'Aguardando...';
+    return '<div style="background:var(--card);border:1px solid '+(s.status==='ok'?'rgba(138,179,74,.4)':s.status==='erro'?'rgba(224,90,74,.4)':'var(--border)')+';border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px;">'
+      +'<div style="font-size:9px;font-weight:700;color:var(--accent);letter-spacing:1px;text-transform:uppercase;">'+b.label+'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;">'
+        +'<span style="font-size:18px;color:'+cor+';">'+icon+'</span>'
+        +'<span style="font-size:10px;color:'+cor+';font-weight:600;">'+b.nome+'</span>'
+      +'</div>'
+      +'<div style="font-size:9px;color:#6a8a6a;border-top:1px solid var(--border);padding-top:5px;margin-top:2px;">'+msg+'</div>'
+      +'</div>';
+  }).join('');
 }
 
-/* -- MSAL -------------------------------------------------------- */
-var _msalApp = null;
-var _msalReadyPromise = null;
-async function getMsalApp(){
-  // Singleton com Promise — garante que initialize() só é chamado uma vez
-  // e qualquer chamada concorrente aguarda a mesma Promise
-  if(_msalReadyPromise) return _msalReadyPromise;
-  _msalReadyPromise = (async function(){
-    if(typeof msal === 'undefined'){
-      throw new Error('Biblioteca MSAL nao carregada. Verifique sua conexao e recarregue a pagina.');
-    }
-    var app = new msal.PublicClientApplication({
-      auth:{ clientId:BOCCHI_CFG.clientId, authority:BOCCHI_CFG.authority, redirectUri:BOCCHI_CFG.redirectUri },
-      cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:false }
-    });
-    // MSAL v3+ exige await initialize() antes de qualquer operação
-    if(typeof app.initialize === 'function'){
-      await app.initialize();
-    }
-    _msalApp = app;
-    return app;
-  })();
-  return _msalReadyPromise;
+async function carregarExcel(caminho){
+  var response = await fetch(caminho, {cache:'no-store'});
+  if(!response.ok) throw new Error('HTTP '+response.status+' ao carregar '+caminho);
+  var arrayBuffer = await response.arrayBuffer();
+  var wb = XLSX.read(new Uint8Array(arrayBuffer), {type:'array', cellDates:true});
+  return {wb:wb, response:response};
 }
 
-function carregarMsalSeDinamic(){
-  return new Promise(function(resolve, reject){
-    if(typeof msal !== 'undefined'){ resolve(); return; }
-    // Shim já embutido inline — este fallback só é chamado se msal não existir
-    // (não deve acontecer normalmente)
-    var urls = [
-      'https://unpkg.com/@azure/msal-browser@2.39.0/dist/msal-browser.min.js',
-      'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/dist/msal-browser.min.js'
-    ];
-    var idx = 0;
-    function tentarProximo(){
-      if(idx >= urls.length){
-        reject(new Error(
-          'Biblioteca MSAL nao carregou. Solucao: baixe o arquivo msal-browser.min.js ' +
-          'de https://unpkg.com/@azure/msal-browser/dist/msal-browser.min.js ' +
-          'e coloque na mesma pasta do index.html no GitHub.'
-        ));
-        return;
-      }
-      var url = urls[idx++];
-      console.log('[MSAL] Tentando: ' + url);
-      var s = document.createElement('script');
-      s.src = url;
-      s.onload = function(){
-        if(typeof msal !== 'undefined'){
-          console.log('[MSAL] Carregado de: ' + url);
-          resolve();
-        } else {
-          tentarProximo();
-        }
-      };
-      s.onerror = function(){ tentarProximo(); };
-      document.head.appendChild(s);
-    }
-    tentarProximo();
-  });
-}
-async function getToken(){
-  // Garantir que MSAL está carregado
-  await carregarMsalSeDinamic();
-  var app = await getMsalApp();
-  // Verificar redirect de login
-  try{ await app.handleRedirectPromise(); }catch(e){}
-  var accounts = app.getAllAccounts();
-  var token = null;
-  if(accounts.length > 0){
-    try{
-      var result = await app.acquireTokenSilent({ scopes:BOCCHI_CFG.scopes, account:accounts[0] });
-      token = result.accessToken;
-    }catch(e){
-      console.warn('[MSAL] Silent falhou, tentando popup:', e.message);
-    }
-  }
-  if(!token){
-    try{
-      var result = await app.loginPopup({ scopes:BOCCHI_CFG.scopes });
-      token = result.accessToken;
-    }catch(e){
-      throw new Error('Login cancelado ou sem permissao: '+e.message);
-    }
-  }
-  // Log do token decodificado para diagnóstico
+async function obterLastModified(caminho){
   try{
-    var parts = token.split('.');
-    if(parts.length===3){
-      var payload = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
-      console.log('[MSAL] Token obtido para:', payload.upn||payload.preferred_username||payload.email||'?');
-      console.log('[MSAL] Scopes no token (scp):', payload.scp||payload.roles||'N/D');
-      console.log('[MSAL] Audience (aud):', payload.aud);
-      console.log('[MSAL] Expira em:', new Date(payload.exp*1000).toLocaleString('pt-BR'));
-    }
-  }catch(e){}
-  return token;
+    var r = await fetch(caminho, {method:'HEAD', cache:'no-store'});
+    var lm = r.headers.get('Last-Modified');
+    if(lm) return new Date(lm).toLocaleString('pt-BR');
+    return 'Data não disponível';
+  }catch(e){
+    return 'Data não disponível';
+  }
 }
 
-/* -- Graph API --------------------------------------------------- */
-async function graphGet(token, url){
-  console.log('[Graph] GET', url);
-  var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
-  if(!r.ok){
-    var body = '';
-    try{ body = await r.text(); }catch(e){}
-    console.error('[Graph] Erro '+r.status+' em '+url+'\nBody:', body);
-    var msg = 'Graph API erro '+r.status+' em '+url.split('?')[0];
-    if(r.status===401) msg += ' — Token invalido. Recarregue a pagina.';
-    if(r.status===403) msg += ' — Sem permissao. Verifique Admin Consent no Azure AD.';
-    if(r.status===404) msg += ' — Recurso nao encontrado.';
-    throw new Error(msg);
-  }
-  var json = await r.json();
-  console.log('[Graph] OK', url.split('?')[0], json);
-  return json;
-}
+// -- Processadores - reutilizam a lógica das funções de importação -----------
 
-async function resolverSiteId(token){
-  // Estratégia 1: Graph API /sites com hostname
-  var url = 'https://graph.microsoft.com/v1.0/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios';
-  console.log('[Graph] Buscando siteId:', url);
-  var r = await fetch(url, {headers:{Authorization:'Bearer '+token}});
-  var data = await r.json();
-  console.log('[Graph] Resposta siteId:', JSON.stringify(data).slice(0,300));
-  if(data.id) return data.id;
-  throw new Error('siteId nao encontrado. Resposta: '+JSON.stringify(data).slice(0,200));
-}
-
-
-var _cachedSiteId = null, _cachedDriveId = null;
-
-async function getArquivoBuffer(token, nomeArquivo){
-  console.log('[Graph] Buscando arquivo:', nomeArquivo);
-
-  // ESTRATÉGIA 1: Graph API com siteId dinâmico
-  try{
-    if(!_cachedSiteId){
-      _cachedSiteId = await resolverSiteId(token);
-    }
-    console.log('[Graph] siteId:', _cachedSiteId);
-
-    if(!_cachedDriveId){
-      var drives = await fetch(
-        'https://graph.microsoft.com/v1.0/sites/'+_cachedSiteId+'/drives',
-        {headers:{Authorization:'Bearer '+token}}
-      );
-      var drivesData = await drives.json();
-      console.log('[Graph] Drives:', drivesData.value&&drivesData.value.map(function(d){return d.name;}));
-      var drive = drivesData.value&&drivesData.value.find(function(d){
-        var n=(d.name||'').toLowerCase();
-        return n==='documentos'||n==='documents'||n==='shared documents';
-      });
-      if(!drive && drivesData.value&&drivesData.value.length) drive=drivesData.value[0];
-      if(drive) _cachedDriveId = drive.id;
-      console.log('[Graph] Drive selecionado:', drive&&drive.name, _cachedDriveId);
-    }
-
-    if(_cachedDriveId){
-      var path = 'Indicadores/Indicador HTML/'+nomeArquivo;
-      var encodedPath = path.split('/').map(function(s){return encodeURIComponent(s);}).join('/');
-      var itemUrl = 'https://graph.microsoft.com/v1.0/drives/'+_cachedDriveId+'/root:/'+encodedPath;
-      console.log('[Graph] Item URL:', itemUrl);
-      var metaR = await fetch(itemUrl, {headers:{Authorization:'Bearer '+token}});
-      var meta = await metaR.json();
-      console.log('[Graph] Meta:', JSON.stringify(meta).slice(0,200));
-      if(meta.id){
-        var lastMod = meta.lastModifiedDateTime?new Date(meta.lastModifiedDateTime).toLocaleString('pt-BR'):'N/D';
-        // Baixar via downloadUrl ou /content
-        var dlUrl = meta['@microsoft.graph.downloadUrl'];
-        var buf;
-        if(dlUrl){
-          var dlR = await fetch(dlUrl);
-          if(!dlR.ok) throw new Error('Erro download direto: '+dlR.status);
-          buf = await dlR.arrayBuffer();
-        } else {
-          var contR = await fetch(itemUrl+':/content', {headers:{Authorization:'Bearer '+token}});
-          if(!contR.ok) throw new Error('Erro /content: '+contR.status);
-          buf = await contR.arrayBuffer();
-        }
-        return {buffer:buf, lastMod:lastMod};
-      }
-    }
-  } catch(e1){
-    console.warn('[Graph] Estratégia Graph API falhou:', e1.message);
-    _cachedSiteId=null; _cachedDriveId=null;
-  }
-
-  // ESTRATÉGIA 2: SharePoint REST API diretamente (não requer siteId)
-  try{
-    var spRelPath = '/sites/Logstica-BocchiAgrobios/Shared%20Documents/Indicadores/Indicador%20HTML/' + encodeURIComponent(nomeArquivo);
-    var spUrl = 'https://bocchiagrobios.sharepoint.com/_api/web/GetFileByServerRelativeUrl(\'' + spRelPath + '\')/$value';
-    console.log('[SP REST] Tentando:', spUrl);
-    var spR = await fetch(spUrl, {headers:{'Authorization':'Bearer '+token,'Accept':'application/octet-stream'}});
-    console.log('[SP REST] Status:', spR.status);
-    if(spR.ok){
-      return {buffer: await spR.arrayBuffer(), lastMod:'Via SharePoint REST'};
-    }
-    console.warn('[SP REST] Status nao ok:', spR.status);
-  } catch(e2){
-    console.warn('[SP REST] Falhou:', e2.message);
-  }
-
-  // ESTRATÉGIA 3: Graph com siteId fixo (hardcoded como fallback final)
-  // Para obter o siteId fixo: abra o Graph Explorer e acesse
-  // https://graph.microsoft.com/v1.0/sites/bocchiagrobios.sharepoint.com:/sites/Logstica-BocchiAgrobios
-  // Cole o valor de "id" aqui:
-  var SITE_ID_FIXO = ''; // ex: 'bocchiagrobios.sharepoint.com,abc123,def456'
-  if(SITE_ID_FIXO){
-    try{
-      var drives2 = await fetch(
-        'https://graph.microsoft.com/v1.0/sites/'+SITE_ID_FIXO+'/drives',
-        {headers:{Authorization:'Bearer '+token}}
-      );
-      var d2 = await drives2.json();
-      var dr2 = d2.value&&(d2.value.find(function(d){var n=d.name.toLowerCase();return n.indexOf('doc')!==-1;})||d2.value[0]);
-      if(dr2){
-        var p2 = 'Indicadores/Indicador HTML/'+nomeArquivo;
-        var ep2 = p2.split('/').map(function(s){return encodeURIComponent(s);}).join('/');
-        var iUrl2 = 'https://graph.microsoft.com/v1.0/drives/'+dr2.id+'/root:/'+ep2;
-        var m2 = await fetch(iUrl2, {headers:{Authorization:'Bearer '+token}});
-        var mj2 = await m2.json();
-        if(mj2['@microsoft.graph.downloadUrl']){
-          var br2 = await fetch(mj2['@microsoft.graph.downloadUrl']);
-          if(br2.ok) return {buffer:await br2.arrayBuffer(), lastMod:'Via siteId fixo'};
-        }
-      }
-    }catch(e3){console.warn('[Graph fixo] Falhou:',e3.message);}
-  }
-
-  throw new Error('Nao foi possivel baixar o arquivo "'+nomeArquivo+'" por nenhuma estratégia. Verifique permissões no Azure AD e acesso ao SharePoint.');
-}
-
-async function getArquivoBuffer(token, nomeArquivo){
-  // 1. Resolver siteId (com cache)
-  if(!_cachedSiteId){
-    _cachedSiteId = await resolverSiteId(token);
-  }
-  console.log('[Graph] Usando siteId:', _cachedSiteId);
-
-  // 2. Listar drives (com cache)
-  if(!_cachedDriveId){
-    var drives = await graphGet(token, BOCCHI_CFG.graph+'/sites/'+_cachedSiteId+'/drives');
-    console.log('[Graph] Drives disponiveis:', drives.value.map(function(d){return d.name+' ('+d.id+')';}));
-    var drive = drives.value.find(function(d){
-      var n=(d.name||'').toLowerCase();
-      return n==='documentos'||n==='documents'||n==='shared documents';
-    });
-    if(!drive && drives.value.length) drive = drives.value[0];
-    if(!drive) throw new Error('Nenhum drive encontrado no site. Drives: '+JSON.stringify(drives.value.map(function(d){return d.name;})));
-    _cachedDriveId = drive.id;
-    console.log('[Graph] Drive selecionado:', drive.name, _cachedDriveId);
-  }
-
-  // 3. Montar caminho e buscar item
-  var path = BOCCHI_CFG.folder+'/'+nomeArquivo;
-  // Codificar cada segmento separadamente, mantendo as barras
-  var encodedPath = path.split('/').map(function(seg){ return encodeURIComponent(seg); }).join('/');
-  var itemUrl = BOCCHI_CFG.graph+'/drives/'+_cachedDriveId+'/root:/'+encodedPath;
-  console.log('[Graph] Buscando item:', itemUrl);
-
-  // 4. Metadados
-  var meta = await graphGet(token, itemUrl);
-  var lastMod = meta.lastModifiedDateTime
-    ? new Date(meta.lastModifiedDateTime).toLocaleString('pt-BR') : 'N/D';
-  console.log('[Graph] Arquivo encontrado:', meta.name, '| Modificado:', lastMod);
-
-  // 5. Baixar conteúdo via @microsoft.graph.downloadUrl (evita redirect CORS)
-  var downloadUrl = meta['@microsoft.graph.downloadUrl'];
-  var buffer;
-  if(downloadUrl){
-    console.log('[Graph] Usando downloadUrl direto');
-    var dr = await fetch(downloadUrl);
-    if(!dr.ok) throw new Error('Erro ao baixar via downloadUrl ('+dr.status+')');
-    buffer = await dr.arrayBuffer();
-  } else {
-    console.log('[Graph] Usando /content endpoint');
-    var cr = await fetch(itemUrl+':/content', {headers:{Authorization:'Bearer '+token}});
-    if(!cr.ok) throw new Error('Erro ao baixar '+nomeArquivo+' ('+cr.status+')');
-    buffer = await cr.arrayBuffer();
-  }
-
-  return {buffer:buffer, lastMod:lastMod};
-}
-
-/* -- Processadores ----------------------------------------------- */
 function processarFreteTerceiros(wb){
-  var ws=wb.Sheets[wb.SheetNames[0]];
-  var rawRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(ws, {defval:''});
   if(!rawRows.length) throw new Error('Planilha vazia');
-  var cols=Object.keys(rawRows[0]);
+  // Reutiliza o corpo do importarEAbrir (sem FileReader)
+  var cols = Object.keys(rawRows[0]);
+  function findC(keys){ return cols.find(function(c){var cn=normC(c);return keys.some(function(k){return cn===normC(k)||cn.indexOf(normC(k))!==-1;})||'';})||''; }
   function normC(s){var t={'a':'aaáàâãä','e':'eéèêë','i':'iíìîï','o':'oóòôõö','u':'uúùûü','c':'cç','n':'nñ'};var r=String(s).toLowerCase();var out='';for(var i=0;i<r.length;i++){var ch=r[i];var found=false;for(var b in t){if(t[b].indexOf(ch)!==-1){out+=b;found=true;break;}}if(!found)out+=ch;}return out.replace(/[^a-z0-9]/g,'');}
-  function findC(keys){return cols.find(function(c){var cn=normC(c);return keys.some(function(k){return cn===normC(k)||cn.indexOf(normC(k))!==-1;})||'';}) ||'';}
   function parseN(v){if(typeof v==='number')return v;if(typeof v==='string')return parseFloat(v.replace(/[^\d,.\-]/g,'').replace(',','.'))||0;return 0;}
-  function parseDt(v){if(v instanceof Date)return v;if(typeof v==='number'){var d=new Date(Math.round((v-25569)*86400*1000));return isNaN(d.getTime())?null:d;}if(typeof v==='string'){var p=v.split(/[\/\-\.]/);if(p.length===3&&p[0].length<=2&&p[2].length===4)return new Date(+p[2],+p[1]-1,+p[0]);return new Date(v);}return null;}
+  function parseDate(v){if(v instanceof Date)return v;if(typeof v==='number'){var d=new Date(Math.round((v-25569)*86400*1000));return isNaN(d.getTime())?null:d;}if(typeof v==='string'){var p=v.split(/[\/\-\.]/);if(p.length===3&&p[0].length<=2&&p[2].length===4)return new Date(+p[2],+p[1]-1,+p[0]);return new Date(v);}return null;}
   var MP=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  var mData=findC(['dataemissao','emissao','data']),mAno=findC(['ano']),mReal=findC(['vlrealiz','valrealiz','realizado','freterealizado']),mPrev=findC(['orcado','previsto','freteprevisto','vlorcado']),mTransp=findC(['transpresumido','transportador','transp']),mPeso=findC(['pssaida','psbruto','peso']),mRotaE=findC(['rotaentrada']),mRotaS=findC(['rotasaida']),mProduto=findC(['itembalanca','produto','item']);
-  ALL_DATA=rawRows.map(function(row){
-    var dt=mData?parseDt(row[mData]):new Date();if(!dt||isNaN(dt.getTime()))dt=new Date();
-    var mes=dt.getMonth(),ano=(mAno&&row[mAno]&&!isNaN(Number(row[mAno])))?String(Math.round(Number(row[mAno]))):String(dt.getFullYear());
-    var real=parseN(row[mReal]),prev=mPrev?parseN(row[mPrev]):real,ton=mPeso?parseN(row[mPeso])/1000:0,prod=mProduto?String(row[mProduto]||'Outros').trim():'Outros';
-    return{data:dt,ano:ano,mes:mes,mesStr:MP[mes],rotaEntrada:mRotaE?String(row[mRotaE]||'').trim():'',rotaSaida:mRotaS?String(row[mRotaS]||'').trim():'',transportador:mTransp?String(row[mTransp]||'Sem transportador').trim():'Sem transportador',destinatario:'',peso:ton,previsto:prev,realizado:real,produto:prod,dif:prev-real};
+  var mData=findC(['dataemissao','emissao','data']);
+  var mAno=findC(['ano']);
+  var mReal=findC(['vlrealiz','valrealiz','realizado','frete realizado']);
+  var mPrev=findC(['orcado','previsto','frete previsto','vlorcado']);
+  var mTransp=findC(['transpresumido','transportador','transp']);
+  var mPeso=findC(['pssaida','psbruto','peso']);
+  var mRotaE=findC(['rotaentrada','rota entrada']);
+  var mRotaS=findC(['rotasaida','rota saida']);
+  var mProduto=findC(['itembalanca','produto','item']);
+  ALL_DATA = rawRows.map(function(row){
+    var dt=mData?parseDate(row[mData]):new Date();
+    if(!dt||isNaN(dt.getTime()))dt=new Date();
+    var mes=dt.getMonth();
+    var ano=(mAno&&row[mAno]&&!isNaN(Number(row[mAno])))?String(Math.round(Number(row[mAno]))):String(dt.getFullYear());
+    var real=parseN(row[mReal]);
+    var prev=mPrev?parseN(row[mPrev]):real;
+    var ton=mPeso?parseN(row[mPeso])/1000:0;
+    var prod=mProduto?String(row[mProduto]||'Outros').trim():'Outros';
+    return {data:dt,ano:ano,mes:mes,mesStr:MP[mes],rotaEntrada:mRotaE?String(row[mRotaE]||'').trim():'',rotaSaida:mRotaS?String(row[mRotaS]||'').trim():'',transportador:mTransp?String(row[mTransp]||'Sem transportador').trim():'Sem transportador',destinatario:'',peso:ton,previsto:prev,realizado:real,produto:prod,dif:prev-real};
   }).filter(function(r){return r.realizado>0||r.previsto>0;});
   window._dadosReaisD1=true; window._dadosReais=true;
-  idbSalvarBase('freteTerceiros', slimD1(ALL_DATA));
+  persistDelete(STORAGE_KEYS.d1); persistSave(STORAGE_KEYS.d1, slimD1(ALL_DATA));
 }
+
 function processarFreteGeral(wb){
-  var ws=wb.Sheets[wb.SheetNames[0]];
-  var rawRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(ws, {defval:''});
   if(!rawRows.length) throw new Error('Planilha vazia');
   var cols=Object.keys(rawRows[0]);
   function norm2(s){var t={'a':'aaáàâãä','e':'eéèêë','i':'iíìîï','o':'oóòôõö','u':'uúùûü','c':'cç','n':'nñ'};var r=String(s).toLowerCase();var out='';for(var i=0;i<r.length;i++){var ch=r[i];var found=false;for(var b in t){if(t[b].indexOf(ch)!==-1){out+=b;found=true;break;}}if(!found)out+=ch;}return out.replace(/[^a-z0-9]/g,'');}
@@ -4615,238 +4173,152 @@ function processarFreteGeral(wb){
   function parseD(v){if(v instanceof Date)return v;if(typeof v==='number'){var d=new Date(Math.round((v-25569)*86400*1000));return isNaN(d.getTime())?null:d;}if(typeof v==='string'){var p=v.split(/[\/\-\.]/);if(p.length===3&&p[0].length<=2&&p[2].length===4)return new Date(+p[2],+p[1]-1,+p[0]);return new Date(v);}return null;}
   function parseN(v){if(typeof v==='number')return v;if(typeof v==='string')return parseFloat(v.replace(/[^\d,.\-]/g,'').replace(',','.'))||0;return 0;}
   var MP2=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  var mData=findC2(['dataemissao','emissao']),mAno=findC2(['ano']),mTransp=findC2(['transpresumido','transpresumo']),mPeso=findC2(['pssaida','ps saida']),mReal=findC2(['vlrealiz.','vlrealiz']),mProd=findC2(['itembalanca','balanca']),mRotaE=findC2(['rotaentrada']),mRotaS=findC2(['rotasaida']);
+  var mData=findC2(['dataemissao','emissao']);var mAno=findC2(['ano']);var mTransp=findC2(['transpresumido','transpresumo']);var mPeso=findC2(['pssaida','ps saida']);var mReal=findC2(['vlrealiz.','vlrealiz']);var mProd=findC2(['itembalanca','balanca']);var mRotaE=findC2(['rotaentrada','rota entrada']);var mRotaS=findC2(['rotasaida','rota saida']);
   ALL_DATA_D2=rawRows.map(function(row){
     var dt=mData?parseD(row[mData]):new Date();if(!dt||isNaN(dt.getTime()))dt=new Date();
-    var mes=dt.getMonth(),ano=(mAno&&row[mAno]&&!isNaN(Number(row[mAno])))?String(Math.round(Number(row[mAno]))):String(dt.getFullYear());
-    var real=parseN(row[mReal]),peso_kg=parseN(row[mPeso]);
+    var mes=dt.getMonth();var ano=(mAno&&row[mAno]&&!isNaN(Number(row[mAno])))?String(Math.round(Number(row[mAno]))):String(dt.getFullYear());
+    var real=parseN(row[mReal]);var peso_kg=parseN(row[mPeso]);
     var transp_up=mTransp?String(row[mTransp]||'').toUpperCase():'';
     var tipo=(transp_up.indexOf('BOCCHI')!==-1)?'PROPRIO':'TERCEIRO';
-    return{data:dt,ano:ano,mes:mes,mesStr:MP2[mes],tipo:tipo,transportador:mTransp?String(row[mTransp]||'Sem transp').trim():'Sem transp',produto:mProd?String(row[mProd]||'Outros').trim():'Outros',rotaEntrada:mRotaE?String(row[mRotaE]||'').trim():'',rotaSaida:mRotaS?String(row[mRotaS]||'').trim():'',peso:peso_kg/1000,realizado:real};
+    var prod=mProd?String(row[mProd]||'Outros').trim():'Outros';
+    var transp=mTransp?String(row[mTransp]||'Sem transp').trim():'Sem transp';
+    return {data:dt,ano:ano,mes:mes,mesStr:MP2[mes],tipo:tipo,transportador:transp,produto:prod,rotaEntrada:mRotaE?String(row[mRotaE]||'').trim():'',rotaSaida:mRotaS?String(row[mRotaS]||'').trim():'',peso:peso_kg/1000,realizado:real};
   }).filter(function(r){return r.realizado>0||r.peso>0;});
   window._dadosReaisD2=true;
-  idbSalvarBase('freteGeral', slimD2(ALL_DATA_D2));
+  persistDelete(STORAGE_KEYS.d2); persistSave(STORAGE_KEYS.d2, slimD2(ALL_DATA_D2));
 }
+
 function processarFrota(wb){
-  var ws=wb.Sheets[wb.SheetNames[0]];
-  var rawRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(ws, {defval:''});
   if(!rawRows.length) throw new Error('Planilha vazia');
   var cols=Object.keys(rawRows[0]);
   function nF(s){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
   function fF(keys){return cols.find(function(c){var cn=nF(c);return keys.some(function(k){return cn===nF(k)||cn.indexOf(nF(k))!==-1;})||'';}) ||'';}
   function pN(v){if(typeof v==='number')return v;return parseFloat(String(v).replace(/[^\d,.\-]/g,'').replace(',','.'))||0;}
-  var mMes=fF(['mes/ano','mesano','mes']),mAno=fF(['ano']),mDesp=fF(['despesas','desp']),mPeso=fF(['peso bruto','pesobruto','peso']),mFrete=fF(['frete','rfinal','r$ final']);
+  var mMes=fF(['mes/ano','mesano','mes']);var mAno=fF(['ano']);var mDesp=fF(['despesas','desp']);var mPeso=fF(['peso bruto','pesobruto','peso']);var mFrete=fF(['frete','rfinal','r$ final']);
   ALL_DATA_FROTA=rawRows.map(function(row){
     var mes=mMes?String(row[mMes]||'').trim():'';var mesNum=0;if(mes&&mes.indexOf('/')!==-1)mesNum=parseInt(mes.split('/')[0])-1;
     var ano=mAno?String(row[mAno]||'').trim():(mes.split('/')[1]||'');if(!isNaN(Number(ano)))ano=String(Math.round(Number(ano)));
-    return{ano:ano,mes:mes,mesNum:mesNum,desp:pN(row[mDesp]),peso:pN(row[mPeso]),frete:pN(row[mFrete])};
+    return {ano:ano,mes:mes,mesNum:mesNum,desp:pN(row[mDesp]),peso:pN(row[mPeso]),frete:pN(row[mFrete])};
   }).filter(function(r){return r.ano&&(r.frete>0||r.desp>0);});
   window._dadosReaisFrota=true;
-  idbSalvarBase('freteFrota', ALL_DATA_FROTA);
+  persistDelete(STORAGE_KEYS.frota); persistSave(STORAGE_KEYS.frota, ALL_DATA_FROTA);
 }
+
 function processarDisponibilidade(wb){
-  var ws=wb.Sheets[wb.SheetNames[0]];
-  var rawRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(ws, {defval:''});
   if(!rawRows.length) throw new Error('Planilha vazia');
   var cols=Object.keys(rawRows[0]);
   function nD(s){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
   function findC(keys){return cols.find(function(c){var cn=nD(c);return keys.some(function(k){var kn=nD(k);return cn===kn||cn.indexOf(kn)!==-1;})||'';}) ||'';}
   function pN(v){if(typeof v==='number')return v;return parseFloat(String(v).replace(/[^\d,.\-]/g,'').replace(',','.'))||0;}
-  var mAno=findC(['ANO']),mMesTxt=findC(['MES/ANO TEXTO','MESANOTEXTO','TEXTO']),mMotivo=findC(['MOTIVO']),mHrsMot=findC(['HORAS MOTIVO','HORASMOTIVO']),mTotalPar=findC(['TOTAL HORAS PARADAS','TOTALHORASPARADAS']),mHrsDisp=findC(['HORAS DISPONIVEIS MES','HORASDISPONIVEISMES','HORASDISPONIVEIS']);
+  var mAno=findC(['ANO']);var mMesTxt=findC(['MES/ANO TEXTO','MESANOTEXTO','TEXTO']);var mMotivo=findC(['MOTIVO']);var mHrsMot=findC(['HORAS MOTIVO','HORASMOTIVO']);var mTotalPar=findC(['TOTAL HORAS PARADAS','TOTALHORASPARADAS']);var mHrsDisp=findC(['HORAS DISPONIVEIS MES','HORASDISPONIVEISMES','HORASDISPONIVEIS']);
   ALL_DATA_DISP=rawRows.map(function(row){
     var anoRaw=row[mAno];var ano=(anoRaw&&!isNaN(Number(anoRaw)))?String(Math.round(Number(anoRaw))):'';
     var mesTxt=mMesTxt?String(row[mMesTxt]||'').trim():'';var mesNum=0;if(mesTxt){var parts=mesTxt.split('/');if(parts.length>=1)mesNum=parseInt(parts[0])-1;}
-    return{ano:ano,mes_texto:mesTxt,mes_num:mesNum,motivo:mMotivo?String(row[mMotivo]||'').trim():'',horas_motivo:pN(row[mHrsMot]),total_paradas:pN(row[mTotalPar]),horas_disp:pN(row[mHrsDisp])};
+    return {ano:ano,mes_texto:mesTxt,mes_num:mesNum,motivo:mMotivo?String(row[mMotivo]||'').trim():'',horas_motivo:pN(row[mHrsMot]),total_paradas:pN(row[mTotalPar]),horas_disp:pN(row[mHrsDisp])};
   }).filter(function(r){return r.ano&&r.horas_disp>0;});
   window._dadosReaisDisp=true;
-  idbSalvarBase('disponibilidade', ALL_DATA_DISP);
+  persistDelete(STORAGE_KEYS.disp); persistSave(STORAGE_KEYS.disp, ALL_DATA_DISP);
 }
+
 function processarAtendimento(wb){
-  var ws=wb.Sheets[wb.SheetNames[0]];
-  var rawRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var rawRows = XLSX.utils.sheet_to_json(ws, {defval:''});
   if(!rawRows.length) throw new Error('Planilha vazia');
   var cols=Object.keys(rawRows[0]);
   function nA(s){return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');}
   function atFnd(keys){return cols.find(function(c){var cn=nA(c);return keys.some(function(k){return cn===nA(k)||cn.indexOf(nA(k))!==-1;})||'';}) ||'';}
   function pN(v){if(typeof v==='number')return v;if(typeof v==='string')return parseFloat(String(v).replace(',','.'))||0;return 0;}
-  var mAno=atFnd(['ANO']),mMes=atFnd(['MES/ANO','MESANO']),mData=atFnd(['DATA']),mItem=atFnd(['ITEM']),mPeso=atFnd(['PESO BRUTO','PESOBRUTO','PESO']),mMeta=atFnd(['META DIA','METADIA','META']);
+  var mAno=atFnd(['ANO']);var mMes=atFnd(['MES/ANO','MESANO']);var mData=atFnd(['DATA']);var mItem=atFnd(['ITEM']);var mPeso=atFnd(['PESO BRUTO','PESOBRUTO','PESO']);var mMeta=atFnd(['META DIA','METADIA','META']);
   function parseDt(v){if(!v)return null;if(v instanceof Date)return v;var s=String(v).trim();var m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);if(m)return new Date(+m[3],+m[2]-1,+m[1]);return new Date(s);}
   ALL_DATA_ATEND=rawRows.map(function(row){
     var ano=String(row[mAno]||'').trim();if(!isNaN(Number(ano))&&ano)ano=String(Math.round(Number(ano)));
     var mes=mMes?String(row[mMes]||'').trim():'';var mesNum=0;if(mes&&mes.indexOf('/')!==-1)mesNum=parseInt(mes.split('/')[0])-1;
     var dt=mData?parseDt(row[mData]):null;var diaNum=dt?dt.getDate():0;var dia=dt?String(dt.getDate()).padStart(2,'0')+'/'+mes:'';
     var item=mItem?String(row[mItem]||'').trim().toUpperCase():'';
-    return{ano:ano,mes:mes,mesNum:mesNum,dia:dia,diaNum:diaNum,item:item,peso:pN(row[mPeso]),meta:pN(row[mMeta]),pct:null};
+    return {ano:ano,mes:mes,mesNum:mesNum,dia:dia,diaNum:diaNum,item:item,peso:pN(row[mPeso]),meta:pN(row[mMeta]),pct:null};
   }).filter(function(r){return r.ano&&r.item&&(r.peso>0||r.meta>0);});
   window._dadosReaisAtend=true;
-  idbSalvarBase('atendimento', ALL_DATA_ATEND);
+  persistDelete(STORAGE_KEYS.atend); persistSave(STORAGE_KEYS.atend, ALL_DATA_ATEND);
 }
 
-/* -- UI de status ------------------------------------------------ */
-var _statusBases = {};
-function setStatus(id, status, info){
-  _statusBases[id] = {status:status, info:info||''};
-  renderStatusBases();
-}
-function renderStatusBases(){
-  var el = document.getElementById('statusBases');
-  if(!el) return;
-  el.innerHTML = BOCCHI_CFG.arquivos.map(function(b){
-    var s = _statusBases[b.id] || {status:'aguardando', info:''};
-    var cor  = s.status==='ok'?'#8ab34a' : s.status==='erro'?'#e05a4a' : s.status==='loading'?'#c8b847' : '#6a8a6a';
-    var icon = s.status==='ok'?'✓' : s.status==='erro'?'✗' : s.status==='loading'?'↻' : '●';
-    var bdr  = s.status==='ok'?'rgba(138,179,74,.4)' : s.status==='erro'?'rgba(224,90,74,.4)' : 'var(--border)';
-    return '<div style="background:var(--card);border:1px solid '+bdr+';border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:5px;">'
-      +'<div style="font-size:9px;font-weight:700;color:var(--accent);letter-spacing:1px;text-transform:uppercase;">'+b.label+'</div>'
-      +'<div style="display:flex;align-items:center;gap:6px;">'
-        +'<span style="font-size:16px;color:'+cor+';font-weight:700;">'+icon+'</span>'
-        +'<span style="font-size:10px;color:'+cor+';font-weight:600;word-break:break-word;">'+b.nome+'</span>'
-      +'</div>'
-      +'<div style="font-size:9px;color:#6a8a6a;border-top:1px solid var(--border);padding-top:4px;">'+s.info+'</div>'
-    +'</div>';
-  }).join('');
-}
-function atualizarBadges(texto){
-  ['dataBadge','d2dataBadge'].forEach(function(id){
-    var el=document.getElementById(id);
-    if(el){el.textContent=texto;el.className='data-badge real';}
-  });
-}
-function atualizarUltimaAtualizacao(ts){
-  idbSave('dataHoraUltimaAtualizacao', ts).catch(function(){});
-  var els=document.querySelectorAll('.ultima-atualizacao');
-  els.forEach(function(el){ el.textContent='Última atualização: '+ts; });
-}
+// -- Função principal de auto-carregamento ------------------------------------
 
-/* -- Inicializar dashboards -------------------------------------- */
-function inicializarDashboards(){
-  window._dadosReais = true;
-  atualizarBadges('Dados Reais ● SharePoint');
-  // D1
-  if(window._d1i && typeof buildFilterOptions==='function'){ buildFilterOptions(); refresh(); }
-  else { window._d1i=false; }
-  // D2
-  if(window._d2i && typeof d2BuildFilters==='function'){ d2DrillState={level:'ano',ano:null,mes:null}; d2BuildFilters(); d2Refresh(); }
-  else { window._d2i=false; }
-  // D3
-  _dispDrill={nivel:'ano',ano:null,mes:null};
-  _frotaDrill2={nivel:'ano',ano:null}; _frotaDrill3={nivel:'ano',ano:null};
-  _atendDrill4={nivel:'ano',ano:null,mes:null}; _atendDrill5={nivel:'ano',ano:null,mes:null};
-  if(typeof d3BuildSidebarFilters==='function') d3BuildSidebarFilters();
-  if(typeof d3UpdateKPIsFromData==='function') d3UpdateKPIsFromData();
-  if(typeof d3ApplyFilters==='function') d3ApplyFilters();
-}
-
-/* -- Carregar do IndexedDB (cache) ------------------------------- */
-async function carregarCache(){
-  var cache = await idbCarregarTodas();
-  var temAlgo = false;
-  if(cache.freteTerceiros && cache.freteTerceiros.length){ ALL_DATA=expandD1(cache.freteTerceiros); window._dadosReaisD1=true; window._dadosReais=true; setStatus('freteTerceiros','ok','Dados locais'); temAlgo=true; }
-  else setStatus('freteTerceiros','aguardando','Sem cache');
-  if(cache.freteGeral && cache.freteGeral.length){ ALL_DATA_D2=expandD2(cache.freteGeral); window._dadosReaisD2=true; setStatus('freteGeral','ok','Dados locais'); temAlgo=true; }
-  else setStatus('freteGeral','aguardando','Sem cache');
-  if(cache.freteFrota && cache.freteFrota.length){ ALL_DATA_FROTA=cache.freteFrota; window._dadosReaisFrota=true; setStatus('freteFrota','ok','Dados locais'); temAlgo=true; }
-  else setStatus('freteFrota','aguardando','Sem cache');
-  if(cache.disponibilidade && cache.disponibilidade.length){ ALL_DATA_DISP=cache.disponibilidade; window._dadosReaisDisp=true; setStatus('disponibilidade','ok','Dados locais'); temAlgo=true; }
-  else setStatus('disponibilidade','aguardando','Sem cache');
-  if(cache.atendimento && cache.atendimento.length){ ALL_DATA_ATEND=cache.atendimento; window._dadosReaisAtend=true; setStatus('atendimento','ok','Dados locais'); temAlgo=true; }
-  else setStatus('atendimento','aguardando','Sem cache');
-  if(temAlgo){
-    atualizarBadges('Dados locais ● cache');
-    inicializarDashboards();
-    // Mostrar data da última atualização do cache
-    try{
-      var ts = await idbGet('dataHoraUltimaAtualizacao');
-      if(ts) atualizarUltimaAtualizacao(ts);
-    }catch(e){}
-  }
-  return temAlgo;
-}
-
-/* -- Função principal: atualizarBases ---------------------------- */
-async function atualizarBases(){
-  // Resetar cache de siteId/driveId para nova busca
-  _cachedSiteId = null; _cachedDriveId = null;
+async function autoCarregarBases(){
   var btn = document.getElementById('btnAtualizar');
   var msg = document.getElementById('msgCarregamento');
-  if(btn){ btn.disabled=true; btn.textContent='⏳ Atualizando...'; }
-  if(msg){ msg.style.display='block'; msg.style.color='#c8b847'; msg.textContent='Conectando ao Microsoft 365...'; }
+  if(btn){btn.disabled=true;btn.textContent='Carregando...';}
+  if(msg){msg.style.display='block';msg.style.color='#c8b847';msg.textContent='Buscando bases no SharePoint...';}
 
-  var token;
-  try{
-    token = await getToken();
-  } catch(e){
-    if(msg){ msg.style.color='#e05a4a'; msg.textContent='Login cancelado ou erro de autenticação: '+e.message; }
-    if(btn){ btn.disabled=false; btn.textContent='↻ Atualizar Bases'; }
-    BOCCHI_CFG.arquivos.forEach(function(b){ if(!_statusBases[b.id]||_statusBases[b.id].status==='aguardando') setStatus(b.id,'erro','Sem autenticação'); });
-    return;
-  }
+  // Marcar tudo como loading
+  BASES_CONFIG.forEach(function(b){ _statusBases[b.id]={status:'loading'}; });
+  renderStatusBases();
 
-  if(msg) msg.textContent='Buscando arquivos no SharePoint...';
-  var ok=0, erro=0, ts = new Date().toLocaleString('pt-BR');
+  var totalOk=0, totalErro=0;
 
-  for(var i=0; i<BOCCHI_CFG.arquivos.length; i++){
-    var arq = BOCCHI_CFG.arquivos[i];
-    setStatus(arq.id,'loading','Carregando...');
+  for(var i=0; i<BASES_CONFIG.length; i++){
+    var base = BASES_CONFIG[i];
     try{
-      var resultado = await getArquivoBuffer(token, arq.nome);
-      var wb = XLSX.read(new Uint8Array(resultado.buffer), {type:'array', cellDates:true});
-      // Chamar processador
-      var fnNome = arq.fn;
-      if(typeof window[fnNome]==='function') window[fnNome](wb);
-      else eval(fnNome+'(wb)');
-      setStatus(arq.id,'ok','Atualizado: '+resultado.lastMod);
-      ok++;
-    } catch(e){
-      console.error('[AutoLoad] Erro em '+arq.nome+':', e.message);
-      setStatus(arq.id,'erro',e.message.slice(0,60));
-      erro++;
+      // Buscar Last-Modified via HEAD
+      var lastMod = await obterLastModified(base.path);
+      // Carregar e processar o arquivo
+      var resultado = await carregarExcel(base.path);
+      base.fn(resultado.wb);
+      _statusBases[base.id]={status:'ok', lastMod:'Atualizado: '+lastMod};
+      totalOk++;
+    } catch(err){
+      console.error('[AutoLoad] Erro em '+base.nome+':', err.message);
+      _statusBases[base.id]={status:'erro', erro:err.message};
+      totalErro++;
     }
+    renderStatusBases();
   }
 
-  if(ok > 0){
-    atualizarUltimaAtualizacao(ts);
-    atualizarBadges('Dados Reais ● SharePoint');
-    setTimeout(inicializarDashboards, 200);
-    if(msg){ msg.style.color='#8ab34a'; msg.textContent=ok+' base(s) atualizadas com sucesso'+(erro>0?' · '+erro+' com erro.':'.'); }
+  // Inicializar dashboards com os dados carregados
+  if(totalOk > 0){
+    setTimeout(function(){
+      _dispDrill={nivel:'ano',ano:null,mes:null};
+      _frotaDrill2={nivel:'ano',ano:null}; _frotaDrill3={nivel:'ano',ano:null};
+      _atendDrill4={nivel:'ano',ano:null,mes:null}; _atendDrill5={nivel:'ano',ano:null,mes:null};
+      if(typeof d3BuildSidebarFilters==='function') d3BuildSidebarFilters();
+      if(typeof d3UpdateKPIsFromData==='function') d3UpdateKPIsFromData();
+      if(typeof d3ApplyFilters==='function') d3ApplyFilters();
+      if(typeof d2BuildFilters==='function') d2BuildFilters();
+      window._d1i=false; window._d2i=false;
+      if(msg){msg.textContent=totalOk+' base(s) carregada(s) com sucesso'+(totalErro>0?' · '+totalErro+' com erro':'')+'.';}
+    }, 300);
   } else {
-    if(msg){ msg.style.color='#e05a4a'; msg.textContent='Nenhuma base foi carregada. Verifique permissões no SharePoint.'; }
+    if(msg){msg.style.color='#e05a4a';msg.textContent='Nenhuma base foi carregada. Verifique os arquivos na pasta.';}
   }
-  if(btn){ btn.disabled=false; btn.textContent='↻ Atualizar Bases'; }
+
+  if(btn){btn.disabled=false;btn.textContent='&#8635; Atualizar Bases';}
 }
 
-/* -- Inicialização ao abrir ------------------------------------- */
-window.addEventListener('load', async function(){
-  // Limpar token MSAL antigo se tinha scopes errados (sem prefixo graph.microsoft.com)
-  try{
-    var msalKey = '__msal_shim_7d1881f8-b141-4a89-bfd8-7df6acdc2f1c';
-    var old = localStorage.getItem(msalKey);
-    if(old){
-      var od = JSON.parse(old);
-      var scps = (od.scopes||[]).join(' ');
-      if(scps.indexOf('graph.microsoft.com')===-1){
-        localStorage.removeItem(msalKey);
-        console.log('[MSAL] Token antigo removido — scopes incorretos. Novo login necessário.');
-      }
+// Carregar ao abrir a página
+window.addEventListener('DOMContentLoaded', function(){
+  // Primeiro tentar cache local (localStorage)
+  setTimeout(function(){
+    // Se não tem dados em cache, tentar carregar do SharePoint
+    var temCache = ALL_DATA.length>0 || ALL_DATA_D2.length>0 || ALL_DATA_DISP.length>0 || ALL_DATA_FROTA.length>0 || ALL_DATA_ATEND.length>0;
+    if(!temCache){
+      autoCarregarBases();
+    } else {
+      // Tem cache - só atualizar os status visuais
+      BASES_CONFIG.forEach(function(b){
+        var temDados = (b.id==='freteTerceiros'&&ALL_DATA.length>0) ||
+                       (b.id==='freteGeral'&&ALL_DATA_D2.length>0) ||
+                       (b.id==='freteFrota'&&ALL_DATA_FROTA.length>0) ||
+                       (b.id==='disponibilidade'&&ALL_DATA_DISP.length>0) ||
+                       (b.id==='atendimento'&&ALL_DATA_ATEND.length>0);
+        _statusBases[b.id]={status:temDados?'ok':'aguardando', lastMod:temDados?'Dados em cache local':''};
+      });
+      renderStatusBases();
     }
-  }catch(e){}
-  renderStatusBases();
-  // 1. Carregar cache primeiro (rápido)
-  var temCache = await carregarCache();
-  // 2. Atualizar em segundo plano via SharePoint
-  // (não bloqueia a UI, roda após o cache ser exibido)
-  setTimeout(async function(){
-    try{ await atualizarBases(); }
-    catch(e){ console.warn('[AutoLoad] Erro no carregamento automático:', e); }
-  }, temCache ? 2000 : 500);
+  }, 1200);
 });
-
-
-
-
-
-
-
 </script>
 </body>
 </html>
