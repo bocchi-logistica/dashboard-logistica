@@ -3958,7 +3958,7 @@ function d3BuildAtendChart(item, data, drillState){
     var grupos=atendGrpAno(data,item);
     _atendGrupos=grupos;
     labels=grupos.map(function(g){return g.ano;});
-    pcts=grupos.map(function(g){return g.meta>0?+(g.peso/g.meta*100).toFixed(1):0;});
+    pcts=grupos.map(function(g){return g.meta>0?Math.min(100, +(g.peso/g.meta*100).toFixed(1)):0;});
     var es=document.getElementById(sId);if(es)es.textContent='Por ano';
     var el=document.getElementById(lId);if(el)el.textContent='Ano';
     var eh=document.getElementById(hintId);if(eh)eh.textContent='Clique em um ano para ver os meses';
@@ -3986,7 +3986,7 @@ function d3BuildAtendChart(item, data, drillState){
     var grupos2=atendGrpMes(data,item,drill.ano);
     _atendGrupos=grupos2;
     labels=grupos2.map(function(g){return g.mes;});
-    pcts=grupos2.map(function(g){return g.meta>0?+(g.peso/g.meta*100).toFixed(1):0;});
+    pcts=grupos2.map(function(g){return g.meta>0?Math.min(100, +(g.peso/g.meta*100).toFixed(1)):0;});
     var es2=document.getElementById(sId);if(es2)es2.textContent=drill.ano;
     var el2=document.getElementById(lId);if(el2)el2.textContent='Mes';
     var eh2=document.getElementById(hintId);if(eh2)eh2.textContent='Clique em um mes para ver os dias';
@@ -4009,7 +4009,7 @@ function d3BuildAtendChart(item, data, drillState){
     var grupos3=atendGrpDia(data,item,drill.ano,drill.mes);
     _atendGrupos=grupos3;
     labels=grupos3.map(function(g){return g.dia;});
-    pcts=grupos3.map(function(g){return g.meta>0?+(g.peso/g.meta*100).toFixed(1):0;});
+    pcts=grupos3.map(function(g){return g.meta>0?Math.min(100, +(g.peso/g.meta*100).toFixed(1)):0;});
     var es3=document.getElementById(sId);if(es3)es3.textContent=drill.mes;
     var el3=document.getElementById(lId);if(el3)el3.textContent='Dia';
     var eh3=document.getElementById(hintId);
@@ -4042,7 +4042,7 @@ function d3BuildAtendChart(item, data, drillState){
     },
     scales:{
       x:{ticks:{color:'#6a8a6a',font:{size:9,family:'Barlow'},maxRotation:0},grid:{color:'rgba(200,184,71,.06)'},border:{color:'transparent'}},
-      y:{min:0,max:110,ticks:{color:'#6a8a6a',font:{size:9,family:'Barlow'},callback:function(v){return v+'%';}},grid:{color:'rgba(200,184,71,.06)'},border:{color:'transparent'}}
+      y:{min:0,max:100,ticks:{color:'#6a8a6a',font:{size:9,family:'Barlow'},callback:function(v){return v+'%';}},grid:{color:'rgba(200,184,71,.06)'},border:{color:'transparent'}}
     },
     onClick:onClick||undefined
   }});
