@@ -1719,21 +1719,27 @@ function msBuildPanel(id){
   for(var i=0;i<sel.options.length;i++){
     (function(opt){
       var row=document.createElement('label');row.className='ms-opt'+(opt.value==='todos'?' ms-todos':'');
+      var val=opt.value; // capturar o VALOR: a cascata pode recriar as opcoes com o painel aberto
       var cb=document.createElement('input');cb.type='checkbox';cb.checked=opt.selected;
       var sp=document.createElement('span');sp.textContent=opt.textContent;
       row.appendChild(cb);row.appendChild(sp);panel.appendChild(row);
       cb.addEventListener('change',function(e){
         e.stopPropagation();
-        if(opt.value==='todos'){
+        if(val==='todos'){
           for(var k=0;k<sel.options.length;k++)sel.options[k].selected=sel.options[k].value==='todos';
         } else {
-          opt.selected=cb.checked;
+          // localizar a opcao VIVA pelo valor (nao usar referencia antiga)
+          var live=null;
+          for(var k=0;k<sel.options.length;k++){if(sel.options[k].value===val){live=sel.options[k];break;}}
+          if(live)live.selected=cb.checked;
           var any=false;
           for(var k=0;k<sel.options.length;k++){if(sel.options[k].value!=='todos'&&sel.options[k].selected)any=true;}
           for(var k=0;k<sel.options.length;k++){if(sel.options[k].value==='todos')sel.options[k].selected=!any;}
         }
-        msBuildPanel(id);msRefreshBtn(id);
+        msRefreshBtn(id);
         sel.dispatchEvent(new Event('change'));
+        // reconstruir o painel APOS o change: a cascata pode ter atualizado as opcoes
+        msBuildPanel(id);
       });
     })(sel.options[i]);
   }
