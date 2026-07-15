@@ -1758,9 +1758,32 @@ function msInit(id){
 }
 function msInitAll(){MS_IDS.forEach(msInit);}
 document.addEventListener('click',function(){document.querySelectorAll('.ms-panel.open').forEach(function(p){p.classList.remove('open');});});
+function d1FilterData(excludeId){
+  const f={fAno:msVals('fAno'),fMes:msVals('fMes'),fRotaE:msVals('fRotaE'),fRotaS:msVals('fRotaS'),fTransp:msVals('fTransp'),fProduto:msVals('fProduto')};
+  if(excludeId)f[excludeId]=[];
+  return ALL_DATA.filter(r=>{if(!msMatch(f.fAno,r.ano))return false;if(!msMatch(f.fMes,r.mes))return false;if(!msMatch(f.fRotaE,r.rotaEntrada))return false;if(!msMatch(f.fRotaS,r.rotaSaida))return false;if(!msMatch(f.fTransp,r.transportador))return false;if(!msMatch(f.fProduto,r.produto))return false;return true;});
+}
 function getFiltered(){
-  const anoL=msVals('fAno'),mesL=msVals('fMes'),rotaEL=msVals('fRotaE'),rotaSL=msVals('fRotaS'),transpL=msVals('fTransp'),produtoL=msVals('fProduto');
-  return ALL_DATA.filter(r=>{if(!msMatch(anoL,r.ano))return false;if(!msMatch(mesL,r.mes))return false;if(!msMatch(rotaEL,r.rotaEntrada))return false;if(!msMatch(rotaSL,r.rotaSaida))return false;if(!msMatch(transpL,r.transportador))return false;if(!msMatch(produtoL,r.produto))return false;return true;});
+  return d1FilterData(null);
+}
+/* Filtro cascata: cada dropdown lista apenas valores existentes
+   considerando os demais filtros ativos (exceto ele mesmo).
+   Valores ja selecionados permanecem na lista para poderem ser desmarcados. */
+function cascadeD1Filters(){
+  const map={fAno:r=>r.ano,fMes:r=>String(r.mes),fRotaE:r=>r.rotaEntrada,fRotaS:r=>r.rotaSaida,fTransp:r=>r.transportador,fProduto:r=>r.produto};
+  Object.keys(map).forEach(id=>{
+    const cur=msVals(id);
+    // Ano nao cascateia: e o eixo de navegacao (drill) e deve sempre permitir troca
+    const data=id==='fAno'?ALL_DATA:d1FilterData(id);
+    let vals=[...new Set(data.map(map[id]).filter(v=>v!==undefined&&v!==null&&v!==''))];
+    cur.forEach(v=>{if(vals.indexOf(v)===-1)vals.push(v);});
+    if(id==='fMes')vals.sort((a,b)=>+a-+b);else vals.sort();
+    const sel=document.getElementById(id);if(!sel)return;
+    sel.innerHTML='<option value="todos">Todos</option>';
+    vals.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=id==='fMes'?MESES_FULL[+v]:v;sel.appendChild(o);});
+    msSetVals(id,cur);
+  });
+  if(typeof msRefreshAll==='function')msRefreshAll();
 }
 function buildFilterOptions(){
   const anos=[...new Set(ALL_DATA.map(r=>r.ano))].sort();
@@ -1852,7 +1875,7 @@ function sortModalBy(key){if(modalSortKey===key){modalSortDir=modalSortDir==='as
 function closeModal(){document.getElementById('modalOverlay').classList.remove('open');document.body.style.overflow='';}
 function closeModalOnBg(e){if(e.target===document.getElementById('modalOverlay'))closeModal();}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
-function refresh(){const data=getFiltered();updateKPIs(data);buildDrillChart(data);buildBreadcrumb();buildDifChart(data);buildRotasChart(data);buildTransp(data);buildCusto(data);buildProduto(data);buildPizza(data);rotasPage=1;renderRotas();document.getElementById('activeFilters').textContent=getActiveLabel();if(typeof msRefreshAll==='function')msRefreshAll();}
+function refresh(){const data=getFiltered();updateKPIs(data);buildDrillChart(data);buildBreadcrumb();buildDifChart(data);buildRotasChart(data);buildTransp(data);buildCusto(data);buildProduto(data);buildPizza(data);rotasPage=1;renderRotas();document.getElementById('activeFilters').textContent=getActiveLabel();cascadeD1Filters();}
 ['fAno','fMes'].forEach(id=>{document.getElementById(id).addEventListener('change',()=>{const ano=msSingle('fAno'),mes=msSingle('fMes');if(ano==='todos'&&mes==='todos'){drillState={level:'ano',ano:null,mes:null};}else if(ano!=='todos'&&mes==='todos'){drillState={level:'mes',ano,mes:null};}else if(ano!=='todos'&&mes!=='todos'){drillState={level:'dia',ano,mes:+mes};}else{drillState={level:'ano',ano:null,mes:null};}refresh();});});
 ['fRotaS','fTransp','fProduto'].forEach(id=>{document.getElementById(id).addEventListener('change',refresh);});
 msInitAll();
